@@ -1,10 +1,11 @@
 from PySide6.QtCore import QSize, Qt, QRectF, QPoint, QPointF
-from PySide6.QtGui import QTransform, QPen, QBrush, QColor, QAction
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QHBoxLayout, QVBoxLayout, QDockWidget, QListWidget, QTextEdit, QGraphicsScene, QGraphicsView, QFrame, QGraphicsSceneMouseEvent, QTabWidget, QToolBar
+from PySide6.QtGui import QTransform, QPen, QBrush, QColor, QAction, QPixmap
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QHBoxLayout, QVBoxLayout, QDockWidget, QListWidget, QTextEdit, QGraphicsScene, QGraphicsView, QFrame, QGraphicsSceneMouseEvent, QTabWidget, QToolBar, QGraphicsPixmapItem, QMenu, QTableWidget, QHeaderView, QTableWidgetItem, QComboBox, QCheckBox
 
 # Only needed for access to command line arguments
 import sys
 from enum import Enum
+from math import ceil
 
 # You need one (and only one) QApplication instance per application.
 # Pass in sys.argv to allow command line arguments for your app.
@@ -14,6 +15,17 @@ app = QApplication(sys.argv)
 class WorkAreaType(Enum):
     MAP = 1
     SPRITE_SHEET = 2
+
+class SpriteObjectOrigin(Enum):
+    BOTTOM_LEFT = 1
+    TOP_LEFT = 2
+    BOTTOM_RIGHT = 3
+    TOP_RIGHT = 4
+
+class HitBoxType(Enum):
+    RECT = 1
+    ELLIPSE = 2
+    POLYGON = 3
 
 class SpriteItem:
     def __init__(self, view, rect, brush):
@@ -32,13 +44,44 @@ class SpriteItem:
             self.view.removeItem(self.graphicsItem)
             self.graphicsItem = None
 
-class SpriteView(QGraphicsView):
+class HitBox:
+    def __init__(self, hitBoxType = HitBoxType.RECT):
+        self.hitBoxType = hitBoxType
+
+class SpriteObject:
+    def __init__(self,
+                 name,
+                 key = None,
+                 objType = None,
+                 tiles = [],
+                 originMode = SpriteObjectOrigin.BOTTOM_LEFT,
+                 renderTiles = True,
+                 hasCollision = False,
+                 extraProperties = {}):
+        self.name = name
+
+        if key is None:
+           key = lower(name).replace(' ', '_')
+
+        self.key = key
+        self.objType = objType
+        self.tiles = tiles
+        self.originMode = originMode
+        self.renderTiles = renderTiles
+        self.hasCollision = hasCollision
+        if self.hasCollision:
+            self.hitBox = HitBox()
+
+        self.extraProperties = extraProperties
+
+class GraphicsView(QGraphicsView):
     def __init__(self, application, scene):
         super().__init__(scene)
         self.application = application
 
         # Need this so all mouse move events are tracked
         self.setMouseTracking(True)
+        self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
     def wheelEvent(self, event):
         if self.application.controlHeld:
@@ -69,6 +112,13 @@ class SpriteView(QGraphicsView):
             self.translate(delta.x(), delta.y())
         else:
             super().wheelEvent(event)
+
+class SpriteSheetView(GraphicsView):
+    def __init__(self, application, scene):
+        super().__init__(application, scene)
+
+        #self.setContextMenuPolicy(Qt.ActionsContextMenu)
+        #self.addAction("Test")
 
 class MapScene(QGraphicsScene):
     def __init__(self, application):
@@ -245,14 +295,18 @@ class MapScene(QGraphicsScene):
         self.mouseDown = False
 
 class SpriteSheetScene(QGraphicsScene):
-    def __init__(self, application):
+    def __init__(self, parent, application):
         super().__init__()
 
+        self.parent = parent
         self.application = application
 
         self.mouseDown = False
         self.gridItems = None
         self.selectedGridItems = None
+        self.size = 101 # extra 1 either side for borders
+        self.tileWidth = 16
+        self.tileHeight = 16
 
         self.gridPen = QPen(Qt.black, 1, Qt.DashLine)
         self.rectPen = QPen(Qt.black, 0)
@@ -266,10 +320,50 @@ class SpriteSheetScene(QGraphicsScene):
 
         self.setBackgroundBrush(QBrush(QColor(220,220,220)))        
 
-        self.createGrid()
-
         self.gridTurtle = self.addRect(QRectF(0, 0, self.size, self.size), QPen(Qt.blue, 0), QBrush(QColor(0,0,255, 75)))
         self.gridTurtle.setZValue(100) #always on top
+
+        self.tilesToObjectAction = QAction("Tile/s to object", self)
+        self.tilesToObjectAction.triggered.connect(self.tilesToObject)
+
+        self.loadSpriteSheetFromImageFile("tilemap2.png")
+
+        self.createGrid()
+
+    def loadSpriteSheetFromImageFile(self, filePath):
+        masterPixmap = QPixmap(filePath)
+        self.masterPixmap = masterPixmap
+
+        width = masterPixmap.width()
+        height = masterPixmap.height()
+
+        self.width = width
+        self.height = height
+
+        self.horizontalTiles = ceil(self.width / self.tileWidth)
+        self.verticalTiles = ceil(self.width / self.tileWidth)
+        self.tiles = [[None for col in range(self.verticalTiles)] for row in range(self.horizontalTiles)]
+        self.objects = []
+        self.objectSelected = False
+
+        for x, row in enumerate(range(self.horizontalTiles)):
+            for y, col in enumerate(range(self.verticalTiles)):
+                copy_x = x * self.tileWidth
+                copy_y = y * self.tileHeight
+                # copy + scale
+                pixmap = masterPixmap.copy(copy_x, copy_y, self.tileWidth, self.tileHeight).scaled(self.size - 2, self.size - 2)
+                pixmapItem = QGraphicsPixmapItem(pixmap)
+
+                # placement
+                x_pos = 1 + (x * (self.size))
+                y_pos = 1 + (y * (self.size))
+
+                pixmapItem.setOffset(x_pos, y_pos)
+                self.tiles[x][y] = [pixmap, pixmapItem]
+                self.addItem(pixmapItem)
+
+    def test(self):
+        print("trigger context", flush=True)
 
     def removeGridLines(self):
         if len(self.gridLines):
@@ -279,9 +373,9 @@ class SpriteSheetScene(QGraphicsScene):
             self.gridLines = []
 
     def createGrid(self):
-        self.rows = 50
-        self.cols = 50
-        self.size = 102 # extra 1 either side for borders
+        self.rows = self.horizontalTiles
+        self.cols = self.verticalTiles
+        
         endPoint = self.rows * self.size
 
         if len(self.gridLines):
@@ -341,7 +435,44 @@ class SpriteSheetScene(QGraphicsScene):
         gridItemX = int(x // self.size) 
         gridItemY = int(y // self.size)
 
-        if self.gridItems[gridItemX][gridItemY]:
+        if x < 0 or y < 0 or gridItemX >= self.horizontalTiles or gridItemY >= self.verticalTiles:
+            return
+
+        # check if object exists at coordinates
+        foundObject = False
+
+        if len(self.objects):
+            for obj in self.objects:
+                for tile in obj.tiles:
+                    if tile[0] == gridItemX and tile[1] == gridItemY:
+                        foundObject = True
+
+                        startX = obj.tiles[0][0]
+                        startY = obj.tiles[0][1]
+
+                        endX = obj.tiles[-1][0]
+                        endY = obj.tiles[-1][1]
+
+                        leftPos = startX * self.size
+                        topPos = startY * self.size
+
+                        width = (endX - startX + 1) * self.size
+                        height = (endY - startY + 1) * self.size
+
+                        self.unselectAll()
+
+                        self.selectedGridItems[startX][startY] = self.addRect(QRectF(leftPos, topPos, width, height), QPen(Qt.yellow, 0), QBrush(QColor(255,255,0, 75)))
+
+                        self.objectSelected = True
+                        self.parent.objectPropertiesDock.setObject(obj)
+
+                        break
+
+        if not foundObject and self.tiles[gridItemX][gridItemY]:
+
+            if self.objectSelected:
+                self.unselectAll()
+
             if self.selectedGridItems[gridItemX][gridItemY] is None:
                 #spriteItem = self.gridItems[gridItemX][gridItemY]
                 leftPos = gridItemX * self.size
@@ -353,6 +484,14 @@ class SpriteSheetScene(QGraphicsScene):
                 # deselect
                 self.removeItem(self.selectedGridItems[gridItemX][gridItemY])
                 self.selectedGridItems[gridItemX][gridItemY] = None
+
+    def unselectAll(self):
+        for index_x, x in enumerate(self.selectedGridItems):
+            for index_y, cell in enumerate(self.selectedGridItems[index_x]):
+                if not cell is None:
+                    self.removeItem(cell)
+                    self.selectedGridItems[index_x][index_y] = None
+        self.objectSelected = False
 
     def deletePress(self):
         for index_x, x in enumerate(self.selectedGridItems):
@@ -375,10 +514,11 @@ class SpriteSheetScene(QGraphicsScene):
         if button == Qt.MouseButton.LeftButton:
             self.mouseDown = True
 
-            if self.application.controlHeld:
-                self.clearGridItemCoordinates(x, y)
-            else:
-                self.fillGridItemCoordinates(x, y)
+            self.selectGridItemCoordinates(x, y)
+            #if self.application.controlHeld:
+            #    self.clearGridItemCoordinates(x, y)
+            #else:
+            #    self.fillGridItemCoordinates(x, y)
         elif button == Qt.MouseButton.MiddleButton:
             self.selectGridItemCoordinates(x, y)
 
@@ -409,11 +549,43 @@ class SpriteSheetScene(QGraphicsScene):
         self.moveGridTurtle(x, y)
 
         if self.mouseDown:
-            if self.application.controlHeld:
-                self.clearGridItemCoordinates(x, y)
-            else:
-                self.fillGridItemCoordinates(x, y)
+            self.selectGridItemCoordinates(x, y)
 
+    def tilesToObject(self):
+        print("Combine", flush=True)
+
+        tiles = []
+
+        # grab all the selected tiles
+        for index_x, x in enumerate(self.selectedGridItems):
+            for index_y, cell in enumerate(self.selectedGridItems[index_x]):
+                if not cell is None:
+                    tiles.append([index_x, index_y])
+
+        self.objects.append(SpriteObject("Object 1", "object_1", '', tiles))
+        # select it
+        self.selectGridItemCoordinates(tiles[0][0] * self.size, tiles[0][1] * self.size)
+
+    def contextMenuEvent(self, e):
+        print("contextMenuEvent", flush=True)
+        pos = e.scenePos()
+        x = pos.x()
+        y = pos.y()
+
+        # align to inside grid item
+        gridItemX = int(x // self.size) 
+        gridItemY = int(y // self.size)
+
+        if self.tiles[gridItemX][gridItemY]:
+            # show context menu
+            menu = QMenu()
+            menu.addAction(self.tilesToObjectAction)
+            menu.popup(e.screenPos())
+
+            # Else it gets garbage collected
+            self.contextMenu = menu
+
+            e.setAccepted(True)
 
     def mouseReleaseEvent(self, e: QGraphicsSceneMouseEvent):
         self.mouseDown = False
@@ -435,17 +607,21 @@ class WorkAreaTab(QMainWindow):
         if areaType == WorkAreaType.MAP:
             scene = MapScene(application)
         else:
-            scene = SpriteSheetScene(application)
+            scene = SpriteSheetScene(self, application)
 
         self.scene = scene
-        view = SpriteView(application, scene);
+        view = SpriteSheetView(application, scene);
+        self.view = view
         view.setScene(scene)
 
         #view.fitInView(scene.itemsBoundingRect())
 
-        centralFrame.layout().addWidget(view);
+        centralFrame.layout().addWidget(view)
 
         self.setCentralWidget(centralFrame)
+
+        view.verticalScrollBar().setSliderPosition(1)
+        view.horizontalScrollBar().setSliderPosition(1)
 
 class WorkAreaTabMap(WorkAreaTab):
     def __init__(self, application, title, areaType):
@@ -471,6 +647,60 @@ class WorkAreaTabMap(WorkAreaTab):
         fileToolBar = self.addToolBar("Map")
         fileToolBar.addAction("Test")
 
+class ObjectPropertiesWidget(QDockWidget):
+    def __init__(self, name, parent):
+        super().__init__(name, parent)
+
+        self.obj = None
+
+        self.objectPropertiesTable = QTableWidget(6, 2, self)
+        self.objectPropertiesTable.setHorizontalHeaderLabels(['Property', 'Value'])
+        self.objectPropertiesTable.verticalHeader().setVisible(False)
+        self.objectPropertiesTable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        nameTitleItem = QTableWidgetItem("Name")
+        keyTitleItem = QTableWidgetItem("Key")
+        typeTitleItem = QTableWidgetItem("Type")
+        originTitleItem = QTableWidgetItem("Origin")
+        shouldRenderTitleItem = QTableWidgetItem("Should Render")
+        hasCollisionTitleItem = QTableWidgetItem("Has Collision")
+
+        for row, item in enumerate([nameTitleItem, keyTitleItem, typeTitleItem, originTitleItem, shouldRenderTitleItem, hasCollisionTitleItem]):
+            item.setFlags(item.flags() ^ (Qt.ItemIsSelectable | Qt.ItemIsEditable))
+            self.objectPropertiesTable.setItem(row, 0, item)
+
+        self.setWidget(self.objectPropertiesTable)
+        self.setFloating(False)
+
+    def setObject(self, obj):
+        self.obj = obj
+
+        table = self.objectPropertiesTable
+
+        table.setItem(0, 1, QTableWidgetItem(obj.name))
+        table.setItem(1, 1, QTableWidgetItem(obj.key))
+        table.setItem(2, 1, QTableWidgetItem(obj.objType))
+
+        originBox = QComboBox()
+        originBox.addItem("Bottom Left", SpriteObjectOrigin.BOTTOM_LEFT)
+        originBox.addItem("Top Left", SpriteObjectOrigin.TOP_LEFT)
+        originBox.addItem("Bottom Right", SpriteObjectOrigin.BOTTOM_RIGHT)
+        originBox.addItem("Top Right", SpriteObjectOrigin.TOP_RIGHT)
+        table.setCellWidget(3, 1, originBox)
+
+        shouldRenderCheckbox = QCheckBox()
+        if obj.renderTiles:
+            shouldRenderCheckbox.setChecked(True)
+
+        hasCollisionCheckbox = QCheckBox()
+        if obj.hasCollision:
+            hasCollisionCheckbox.setChecked(True)
+
+        table.setCellWidget(4, 1, shouldRenderCheckbox)
+        table.setCellWidget(5, 1, hasCollisionCheckbox)
+
+        
+
 class WorkAreaTabSpriteSheet(WorkAreaTab):
     def __init__(self, application, title, areaType):
         super().__init__(application, title, areaType)
@@ -483,6 +713,9 @@ class WorkAreaTabSpriteSheet(WorkAreaTab):
         self.propertiesDock.setFloating(False)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.propertiesDock)
 
+        self.objectPropertiesDock = ObjectPropertiesWidget("Object Properties", self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.objectPropertiesDock)
+
         self.objectsDock = QDockWidget("Objects", self)
         self.objectsWidget = QListWidget()
         self.objectsWidget.addItem("ground")
@@ -491,8 +724,6 @@ class WorkAreaTabSpriteSheet(WorkAreaTab):
         self.objectsDock.setFloating(False)
         self.addDockWidget(Qt.RightDockWidgetArea, self.objectsDock)
 
-    def loadSpriteSheetFromImageFile(self, filePath):
-        pass
 
 class WorkAreaTabWidget(QTabWidget):
     def __init__(self, application = None):
