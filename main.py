@@ -952,7 +952,7 @@ class WorkAreaTabWidget(QTabWidget):
     def closeHandler(self, index):
         msgBox = QMessageBox(self.application)
 
-        msgBox.setWindowTitle("SpriteShits");
+        msgBox.setWindowTitle("SpriteSheetz");
         msgBox.setText("Are you sure you want to close this tab?");
         msgBox.setStandardButtons(QMessageBox.Yes)
         msgBox.addButton(QMessageBox.No)
@@ -1040,7 +1040,7 @@ class MainWindow(QMainWindow):
         self.gridWidth = 16
         self.gridHeight = 16
 
-        self.setWindowTitle("SpriteShits")
+        self.setWindowTitle("SpriteSheetz")
         self.setMinimumSize(QSize(1200, 900))
 
         self.createMenus()
@@ -1128,7 +1128,7 @@ class MainWindow(QMainWindow):
     def confirmQuit(self):
         msgBox = QMessageBox(self)
 
-        msgBox.setWindowTitle("SpriteShits");
+        msgBox.setWindowTitle("SpriteSheetz");
         msgBox.setText("Are you sure you want to exit?");
         msgBox.setStandardButtons(QMessageBox.Yes)
         msgBox.addButton(QMessageBox.No)
@@ -1142,7 +1142,7 @@ class MainWindow(QMainWindow):
             exit()
 
     def saveApplicationState(self):
-        settings = QSettings("Bamboo", "SpriteShits")
+        settings = QSettings("Bamboo", "SpriteSheetz")
         settings.setValue("mainWindow/geometry", self.saveGeometry())
         settings.setValue("mainWindow/windowState", self.saveState())
 
@@ -1150,7 +1150,7 @@ class MainWindow(QMainWindow):
         settings.setValue("mainWindow/tabs", QByteArray(tabState))
     
     def restoreApplicationState(self):
-        settings = QSettings("Bamboo", "SpriteShits")
+        settings = QSettings("Bamboo", "SpriteSheetz")
         try:
             self.restoreGeometry(settings.value("mainWindow/geometry"))
             self.restoreState(settings.value("mainWindow/windowState"))
