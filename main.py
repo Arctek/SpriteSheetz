@@ -1,31 +1,33 @@
-from PySide6.QtCore import QSize, Qt, QRectF, QPoint, QPointF
+from PySide6.QtCore import QSize, Qt, QRectF, QPoint, QPointF, QDir, QSettings, QByteArray
 from PySide6.QtGui import QTransform, QPen, QBrush, QColor, QAction, QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QHBoxLayout, QVBoxLayout, QDockWidget, QListWidget, QTextEdit, QGraphicsScene, QGraphicsView, QFrame, QGraphicsSceneMouseEvent, QTabWidget, QToolBar, QGraphicsPixmapItem, QMenu, QTableWidget, QHeaderView, QTableWidgetItem, QComboBox, QCheckBox
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QHBoxLayout, QVBoxLayout, QDockWidget, QListWidget, QTextEdit, QGraphicsScene, QGraphicsView, QFrame, QGraphicsSceneMouseEvent, QTabWidget, QToolBar, QGraphicsPixmapItem, QMenu, QTableWidget, QHeaderView, QTableWidgetItem, QComboBox, QCheckBox, QTreeView, QFileSystemModel, QFileDialog, QMessageBox
 
 # Only needed for access to command line arguments
 import sys
-from enum import Enum
+from enum import Enum, IntEnum
 from math import ceil
+from os.path import basename
+import json
 
 # You need one (and only one) QApplication instance per application.
 # Pass in sys.argv to allow command line arguments for your app.
 # If you know you won't use command line arguments QApplication([]) works too.
 app = QApplication(sys.argv)
 
-class WorkAreaType(Enum):
-    MAP = 1
-    SPRITE_SHEET = 2
+class WorkAreaType(IntEnum):
+    MAP = 0
+    SPRITE_SHEET = 1
 
-class SpriteObjectOrigin(Enum):
-    BOTTOM_LEFT = 1
-    TOP_LEFT = 2
-    BOTTOM_RIGHT = 3
-    TOP_RIGHT = 4
+class SpriteObjectOrigin(IntEnum):
+    BOTTOM_LEFT = 0
+    TOP_LEFT = 1
+    BOTTOM_RIGHT = 2
+    TOP_RIGHT = 3
 
-class HitBoxType(Enum):
-    RECT = 1
-    ELLIPSE = 2
-    POLYGON = 3
+class HitBoxType(IntEnum):
+    RECT = 0
+    ELLIPSE = 1
+    POLYGON = 2
 
 class SpriteItem:
     def __init__(self, view, rect, brush):
@@ -47,6 +49,25 @@ class SpriteItem:
 class HitBox:
     def __init__(self, hitBoxType = HitBoxType.RECT):
         self.hitBoxType = hitBoxType
+        self.x = 0
+        self.y = 0
+        self.width = 0
+        self.height = 0
+        self.shape = None
+
+    def asdict(self):
+        return {
+            'type': self.hitBoxType,
+            'x': self.x,
+            'y': self.y,
+            'width': self.width,
+            'height': self.height,
+            'shape': self.shape
+        }
+
+    @staticmethod
+    def fromdict(obj):
+        return HitBox()
 
 class SpriteObject:
     def __init__(self,
@@ -73,6 +94,33 @@ class SpriteObject:
             self.hitBox = HitBox()
 
         self.extraProperties = extraProperties
+
+    def asdict(self):
+        data = {
+            'name': self.name,
+            'key': self.key,
+            'type': self.objType,
+            'tiles': self.tiles,
+            'originMode': int(self.originMode),
+            'renderTiles': self.renderTiles,
+            'hasCollision': self.hasCollision
+        }
+
+        if self.hasCollision:
+            data['hitbox'] = self.hitBox.asdict()
+
+        return data
+
+    @staticmethod
+    def fromdict(obj):
+        return SpriteObject(name = obj['name'],
+                            key = obj['key'],
+                            objType = obj['type'],
+                            tiles = obj['tiles'],
+                            originMode = SpriteObjectOrigin(obj['originMode']),
+                            renderTiles = obj['renderTiles'],
+                            hasCollision = obj['hasCollision'])
+
 
 class GraphicsView(QGraphicsView):
     def __init__(self, application, scene):
@@ -181,8 +229,11 @@ class MapScene(QGraphicsScene):
                 y = i * self.size
                 self.gridLines.append(self.addLine(0, y, endPoint, y, self.gridPen))
 
+    def saveState(self):
+        return {}
+
     def fillGridItemCoordinates(self, x, y):
-        print(f"{x}x{y}", flush=True)
+        #print(f"{x}x{y}", flush=True)
 
         # align to inside grid item
         gridItemX = int(x // self.size) 
@@ -197,7 +248,7 @@ class MapScene(QGraphicsScene):
                                                               QBrush(Qt.green))
 
     def clearGridItemCoordinates(self, x, y):
-        print(f"{x}x{y}", flush=True)
+        #print(f"{x}x{y}", flush=True)
 
         # align to inside grid item
         gridItemX = int(x // self.size) 
@@ -211,7 +262,7 @@ class MapScene(QGraphicsScene):
             self.gridItems[gridItemX][gridItemY] = None
 
     def selectGridItemCoordinates(self, x, y):
-        print(f"{x}x{y}", flush=True)
+        #print(f"{x}x{y}", flush=True)
 
         # align to inside grid item
         gridItemX = int(x // self.size) 
@@ -274,7 +325,7 @@ class MapScene(QGraphicsScene):
             gridItemY = self.cols - 1
 
         self.gridTurtle.setPos(QPointF(float(gridItemX * self.size), float(gridItemY * self.size)))
-        print(f"Moved to {gridItemX}x{gridItemY}", flush=True)
+        #print(f"Moved to {gridItemX}x{gridItemY}", flush=True)
 
         
     def mouseMoveEvent(self, e: QGraphicsSceneMouseEvent):
@@ -308,10 +359,13 @@ class SpriteSheetScene(QGraphicsScene):
         self.tileWidth = 16
         self.tileHeight = 16
 
+        self.name = "Untitled sprite sheet"
+
         self.gridPen = QPen(Qt.black, 1, Qt.DashLine)
         self.rectPen = QPen(Qt.black, 0)
 
         self.gridLines = []
+        self.fileName = ""
 
         #rect = self.addRect(QRectF(0, 0, 100, 100), gridOutline, QBrush(Qt.green))
         #item = self.itemAt(50, 50, QTransform())
@@ -326,11 +380,51 @@ class SpriteSheetScene(QGraphicsScene):
         self.tilesToObjectAction = QAction("Tile/s to object", self)
         self.tilesToObjectAction.triggered.connect(self.tilesToObject)
 
-        self.loadSpriteSheetFromImageFile("tilemap2.png")
+    def saveState(self):
+        stateData = {
+            'name': self.name,
+            'type': 'sheet',
+            'spriteFile': self.spriteFile,
+            'tileWidth': self.tileWidth,
+            'tileHeight': self.tileHeight,
+            'width': self.width,
+            'height': self.height,
+            'items': {}
+        }
 
-        self.createGrid()
+        for obj in self.objects:
+            obj_dict = obj.asdict()
+            stateData['items'][obj_dict['key']] = obj_dict
+
+        return stateData
+
+    def restoreState(self, state):
+        self.name = state['name']
+        self.loadSpriteSheetFromImageFile(state['spriteFile'])
+
+        for key in state['items']:
+            self.objects.append(SpriteObject.fromdict(state['items'][key]))
+
+    def saveFile(self, saveAs = False):
+        fileData = self.saveState()
+
+        if self.fileName == '' or saveAs:
+            fileName, _ = QFileDialog.getSaveFileName(self.application, 'Save Sprite Sheet', filter='*.json')
+        else:
+            fileName = self.fileName
+
+        if fileName:
+            self.fileName = fileName
+
+            with open(fileName, 'w') as file:
+                file.write(json.dumps(fileData, indent=4))
+
+            print(fileData, flush=True)
+            print(fileName, flush=True)
 
     def loadSpriteSheetFromImageFile(self, filePath):
+        self.spriteFile = filePath
+        self.spriteFilename = basename(filePath)
         masterPixmap = QPixmap(filePath)
         self.masterPixmap = masterPixmap
 
@@ -361,6 +455,9 @@ class SpriteSheetScene(QGraphicsScene):
                 pixmapItem.setOffset(x_pos, y_pos)
                 self.tiles[x][y] = [pixmap, pixmapItem]
                 self.addItem(pixmapItem)
+
+        self.parent.propertiesDock.setDetails(self)
+        self.createGrid()
 
     def test(self):
         print("trigger context", flush=True)
@@ -400,7 +497,7 @@ class SpriteSheetScene(QGraphicsScene):
                 self.gridLines.append(self.addLine(0, y, endPoint, y, self.gridPen))
 
     def fillGridItemCoordinates(self, x, y):
-        print(f"{x}x{y}", flush=True)
+        #print(f"{x}x{y}", flush=True)
 
         # align to inside grid item
         gridItemX = int(x // self.size) 
@@ -415,7 +512,7 @@ class SpriteSheetScene(QGraphicsScene):
                                                               QBrush(Qt.green))
 
     def clearGridItemCoordinates(self, x, y):
-        print(f"{x}x{y}", flush=True)
+        #print(f"{x}x{y}", flush=True)
 
         # align to inside grid item
         gridItemX = int(x // self.size) 
@@ -428,8 +525,8 @@ class SpriteSheetScene(QGraphicsScene):
             # Need to set data here
             self.gridItems[gridItemX][gridItemY] = None
 
-    def selectGridItemCoordinates(self, x, y):
-        print(f"{x}x{y}", flush=True)
+    def selectGridItemCoordinates(self, x, y, shouldDeselect = True):
+        #print(f"{x}x{y}", flush=True)
 
         # align to inside grid item
         gridItemX = int(x // self.size) 
@@ -440,6 +537,8 @@ class SpriteSheetScene(QGraphicsScene):
 
         # check if object exists at coordinates
         foundObject = False
+
+        #self.saveFile()
 
         if len(self.objects):
             for obj in self.objects:
@@ -480,7 +579,7 @@ class SpriteSheetScene(QGraphicsScene):
             
                 # Need to set data here
                 self.selectedGridItems[gridItemX][gridItemY] = self.addRect(QRectF(leftPos, topPos, self.size, self.size), QPen(Qt.blue, 0), QBrush(QColor(0,0,255, 75)))
-            else:
+            elif shouldDeselect:
                 # deselect
                 self.removeItem(self.selectedGridItems[gridItemX][gridItemY])
                 self.selectedGridItems[gridItemX][gridItemY] = None
@@ -538,7 +637,7 @@ class SpriteSheetScene(QGraphicsScene):
             gridItemY = self.cols - 1
 
         self.gridTurtle.setPos(QPointF(float(gridItemX * self.size), float(gridItemY * self.size)))
-        print(f"Moved to {gridItemX}x{gridItemY}", flush=True)
+        #print(f"Moved to {gridItemX}x{gridItemY}", flush=True)
 
         
     def mouseMoveEvent(self, e: QGraphicsSceneMouseEvent):
@@ -549,7 +648,7 @@ class SpriteSheetScene(QGraphicsScene):
         self.moveGridTurtle(x, y)
 
         if self.mouseDown:
-            self.selectGridItemCoordinates(x, y)
+            self.selectGridItemCoordinates(x, y, False)
 
     def tilesToObject(self):
         print("Combine", flush=True)
@@ -562,9 +661,25 @@ class SpriteSheetScene(QGraphicsScene):
                 if not cell is None:
                     tiles.append([index_x, index_y])
 
-        self.objects.append(SpriteObject("Object 1", "object_1", '', tiles))
+        if len(tiles) == 0:
+            pos = self.gridTurtle.pos()
+            x = pos.x()
+            y = pos.y()
+            
+            gridItemX = int(x // self.size) 
+            gridItemY = int(y // self.size)
+
+            if self.tiles[gridItemX][gridItemY]:
+                tiles.append([gridItemX, gridItemY])
+
+        if len(tiles) == 0:
+            return False
+
+        self.objects.append(SpriteObject("Object " + str(len(self.objects) + 1), "object_" + str(len(self.objects) + 1), '', tiles))
         # select it
         self.selectGridItemCoordinates(tiles[0][0] * self.size, tiles[0][1] * self.size)
+
+        return True
 
     def contextMenuEvent(self, e):
         print("contextMenuEvent", flush=True)
@@ -623,6 +738,12 @@ class WorkAreaTab(QMainWindow):
         view.verticalScrollBar().setSliderPosition(1)
         view.horizontalScrollBar().setSliderPosition(1)
 
+    def saveFile(self):
+        self.scene.saveFile()
+
+    def saveState(self):
+        return self.scene.saveState()
+
 class WorkAreaTabMap(WorkAreaTab):
     def __init__(self, application, title, areaType):
         super().__init__(application, title, areaType)
@@ -657,6 +778,7 @@ class ObjectPropertiesWidget(QDockWidget):
         self.objectPropertiesTable.setHorizontalHeaderLabels(['Property', 'Value'])
         self.objectPropertiesTable.verticalHeader().setVisible(False)
         self.objectPropertiesTable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.objectPropertiesTable.itemChanged.connect(self.itemChanged)
 
         nameTitleItem = QTableWidgetItem("Name")
         keyTitleItem = QTableWidgetItem("Key")
@@ -672,45 +794,126 @@ class ObjectPropertiesWidget(QDockWidget):
         self.setWidget(self.objectPropertiesTable)
         self.setFloating(False)
 
+    def itemChanged(self, item):
+        #print("Changed item", flush=True)
+        #print(item.row())
+        #print(item.type())
+
+        match item.type():
+            case 11:
+                self.obj.name = item.text()
+            case 12:
+                self.obj.key = item.text()
+            case 13:
+                self.obj.objType = item.text()
+
+    def renderChanged(self, state):
+        self.obj.renderTiles = Qt.CheckState(state) == Qt.CheckState.Checked
+
+    def collisionChanged(self, state):
+        self.obj.hasCollision = Qt.CheckState(state) == Qt.CheckState.Checked
+
+    def originChanged(self, text):
+        self.obj.originMode = self.originBox.currentData()
+
     def setObject(self, obj):
         self.obj = obj
 
         table = self.objectPropertiesTable
 
-        table.setItem(0, 1, QTableWidgetItem(obj.name))
-        table.setItem(1, 1, QTableWidgetItem(obj.key))
-        table.setItem(2, 1, QTableWidgetItem(obj.objType))
+        nameItem = QTableWidgetItem(obj.name, 11)
+
+        table.setItem(0, 1, nameItem)
+        table.setItem(1, 1, QTableWidgetItem(obj.key, 12))
+        table.setItem(2, 1, QTableWidgetItem(obj.objType, 13))
 
         originBox = QComboBox()
         originBox.addItem("Bottom Left", SpriteObjectOrigin.BOTTOM_LEFT)
         originBox.addItem("Top Left", SpriteObjectOrigin.TOP_LEFT)
         originBox.addItem("Bottom Right", SpriteObjectOrigin.BOTTOM_RIGHT)
         originBox.addItem("Top Right", SpriteObjectOrigin.TOP_RIGHT)
+        originBox.setCurrentIndex(int(obj.originMode))
+        originBox.currentTextChanged.connect(self.originChanged)
+
+        self.originBox = originBox
+
         table.setCellWidget(3, 1, originBox)
 
         shouldRenderCheckbox = QCheckBox()
         if obj.renderTiles:
             shouldRenderCheckbox.setChecked(True)
+        shouldRenderCheckbox.stateChanged.connect(self.renderChanged)
 
         hasCollisionCheckbox = QCheckBox()
         if obj.hasCollision:
             hasCollisionCheckbox.setChecked(True)
+        hasCollisionCheckbox.stateChanged.connect(self.collisionChanged)
 
         table.setCellWidget(4, 1, shouldRenderCheckbox)
         table.setCellWidget(5, 1, hasCollisionCheckbox)
 
-        
+class SpriteSheetPropertiesWidget(QDockWidget):
+    def __init__(self, name, parent, application):
+        super().__init__(name, parent)
+
+        self.application = application
+
+        self.spriteSheetPropertiesTable = QTableWidget(8, 2, self)
+        self.spriteSheetPropertiesTable.setHorizontalHeaderLabels(['Property', 'Value'])
+        self.spriteSheetPropertiesTable.verticalHeader().setVisible(False)
+        self.spriteSheetPropertiesTable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.spriteSheetPropertiesTable.itemChanged.connect(self.itemChanged)
+
+        nameTitleItem = QTableWidgetItem("Name")
+        spriteFilenameTitleItem = QTableWidgetItem("Sprite Filename")
+        sheetWidthTitleItem = QTableWidgetItem("Sheet Width")
+        sheetHeightTitleItem = QTableWidgetItem("Sheet Height")
+        tileWidthTitleItem = QTableWidgetItem("Tile Width")
+        tileHeightTitleItem = QTableWidgetItem("Tile Height")
+        horizontalTilesTitleItem = QTableWidgetItem("Horizontal Tiles")
+        verticalTilesTitleItem = QTableWidgetItem("Vertical Tiles")
+
+        for row, item in enumerate([nameTitleItem, spriteFilenameTitleItem, sheetWidthTitleItem, sheetHeightTitleItem, tileWidthTitleItem, tileHeightTitleItem, horizontalTilesTitleItem, verticalTilesTitleItem]):
+            item.setFlags(item.flags() ^ (Qt.ItemIsSelectable | Qt.ItemIsEditable))
+            self.spriteSheetPropertiesTable.setItem(row, 0, item)
+
+        self.setWidget(self.spriteSheetPropertiesTable)
+        self.setFloating(False)
+
+    def setDetails(self, sheet):
+        self.sheet = sheet
+        #print(tileWidth, flush=True)
+        # name, spriteFilename, sheetWidth, sheetHeight, tileWidth, tileHeight, horizontalTiles, verticalTiles)
+        nameItem = QTableWidgetItem(sheet.name, 11)
+        spriteFilenameItem = QTableWidgetItem(sheet.spriteFilename, 12)
+        sheetWidthItem = QTableWidgetItem(str(sheet.width), 13)
+        sheetHeightItem = QTableWidgetItem(str(sheet.height), 14)
+        tileWidthItem = QTableWidgetItem(str(sheet.tileWidth), 15)
+        tileHeightItem = QTableWidgetItem(str(sheet.tileHeight), 16)
+        horizontalTilesItem = QTableWidgetItem(str(sheet.horizontalTiles), 17)
+        verticalTilesItem = QTableWidgetItem(str(sheet.verticalTiles), 18)
+
+
+        self.spriteSheetPropertiesTable.setItem(0, 1, nameItem)
+
+        for row, item in enumerate([spriteFilenameItem, sheetWidthItem, sheetHeightItem, tileWidthItem, tileHeightItem, horizontalTilesItem, verticalTilesItem]):
+            item.setFlags(item.flags() ^ (Qt.ItemIsSelectable | Qt.ItemIsEditable))
+            self.spriteSheetPropertiesTable.setItem(row + 1, 1, item)
+
+    def itemChanged(self, item):
+        match item.type():
+            case 11:
+                self.sheet.name = item.text()
+                if hasattr(self.application, 'workAreaWidget'):
+                    tabWidget = self.application.workAreaWidget
+
+                    tabWidget.setTabText(tabWidget.currentIndex(), item.text())
 
 class WorkAreaTabSpriteSheet(WorkAreaTab):
     def __init__(self, application, title, areaType):
         super().__init__(application, title, areaType)
 
-        self.propertiesDock = QDockWidget("Sprite Sheet Properties", self)
-        self.propertiesWidget = QListWidget()
-        self.propertiesWidget.addItem("ground")
-        
-        self.propertiesDock.setWidget(self.propertiesWidget)
-        self.propertiesDock.setFloating(False)
+        self.propertiesDock = SpriteSheetPropertiesWidget("Sprite Sheet Properties", self, application)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.propertiesDock)
 
         self.objectPropertiesDock = ObjectPropertiesWidget("Object Properties", self)
@@ -724,17 +927,39 @@ class WorkAreaTabSpriteSheet(WorkAreaTab):
         self.objectsDock.setFloating(False)
         self.addDockWidget(Qt.RightDockWidgetArea, self.objectsDock)
 
+        #self.scene.loadSpriteSheetFromImageFile("tilemap2.png")
+        #self.scene.createGrid()
+
+    def restoreState(self, state):
+        print(state)
+        self.scene.restoreState(state)
+
 
 class WorkAreaTabWidget(QTabWidget):
     def __init__(self, application = None):
         super().__init__(application)
 
-        self.tabs = []
+        #self.tabs = []
         self.application = application
 
-        self.addTab("Untitled sprite sheet", WorkAreaType.SPRITE_SHEET)
-        self.addTab("Untitled map", WorkAreaType.MAP)
+        self.setTabsClosable(True)
+        self.tabCloseRequested.connect(self.closeHandler)
+
+        #self.addTab("Untitled sprite sheet", WorkAreaType.SPRITE_SHEET)
+        #self.addTab("Untitled map", WorkAreaType.MAP)
+
         
+    def closeHandler(self, index):
+        msgBox = QMessageBox(self.application)
+
+        msgBox.setWindowTitle("SpriteShits");
+        msgBox.setText("Are you sure you want to close this tab?");
+        msgBox.setStandardButtons(QMessageBox.Yes)
+        msgBox.addButton(QMessageBox.No)
+        msgBox.setDefaultButton(QMessageBox.No)
+        
+        if msgBox.exec() == QMessageBox.Yes:
+            self.removeTab(index)
 
     def addTab(self, title, areaType):
         if areaType == WorkAreaType.MAP:
@@ -742,9 +967,65 @@ class WorkAreaTabWidget(QTabWidget):
         else:
             newTab = WorkAreaTabSpriteSheet(self.application, title, areaType)
 
-        self.tabs.append(newTab)
+        #self.tabs.append(newTab)
         super().addTab(newTab, title)
+        return newTab
+
+    def activeTab(self):
+        currentIndex = self.currentIndex()
+
+        if currentIndex > -1:
+            return self.widget(self.currentIndex())
+
+    def saveState(self):
+        tabStates = []
+
+        for i in range(0, self.count()):
+            tab = self.widget(i)
+            tabStates.append(tab.saveState())
+
+        return tabStates
+
+    def restoreState(self, tabStates):
+        print(tabStates)
+        for state in tabStates:
+            print(state)
+            if 'type' in state:
+                print("me", flush=True)
+                if state['type'] == 'sheet':
+                    self.addTab(state['name'], WorkAreaType.SPRITE_SHEET).restoreState(state)
         
+class ResourcesDockWidget(QDockWidget):
+    def __init__(self, name, parent = None):
+        super().__init__(name, parent)
+
+        model = QFileSystemModel()
+        model.setNameFilters(['*.json'])
+        model.setNameFilterDisables(False)
+        #model.setFilter(QDir.NoDotAndDotDot | QDir.AllDirs)
+        model.setRootPath(QDir.currentPath())
+        tree = QTreeView()
+        tree.setRootIsDecorated(False)
+        tree.setModel(model)
+        tree.setRootIndex(model.index(QDir.currentPath()))
+
+        #tree.hideColumn(0)
+
+        for i in range(1, model.columnCount()):
+            tree.hideColumn(i)
+
+        #tree.setHeaderHidden(True)
+        tree.setUniformRowHeights(True)
+        #setDragEnabled(true);
+        #setDefaultDropAction(Qt::MoveAction);
+
+        #self.resourcesWidget = QListWidget()
+        #self.resourcesWidget.addItem("map.rsc")
+        self.tree = tree
+        
+        self.setWidget(tree)
+        self.setFloating(False)
+
 
 # Subclass QMainWindow to customize your application's main window
 class MainWindow(QMainWindow):
@@ -769,12 +1050,9 @@ class MainWindow(QMainWindow):
         # Docks should be split by default not tabbed
         self.setDockOptions(self.dockOptions() & ~QMainWindow.AllowTabbedDocks)
 
-        self.resourcesDock = QDockWidget("Resources", self)
-        self.resourcesWidget = QListWidget()
-        self.resourcesWidget.addItem("map.rsc")
-        
-        self.resourcesDock.setWidget(self.resourcesWidget)
-        self.resourcesDock.setFloating(False)
+        self.resourcesDock = ResourcesDockWidget("Project Files", self)
+        self.resourcesDock.setObjectName("project_files")
+
         self.addDockWidget(Qt.LeftDockWidgetArea, self.resourcesDock)
 
 
@@ -794,8 +1072,12 @@ class MainWindow(QMainWindow):
 
         #centralFrame.layout().addWidget(view);
 
-        self.setCentralWidget(WorkAreaTabWidget(self))
+        self.workAreaWidget = WorkAreaTabWidget(self)
+
+        self.setCentralWidget(self.workAreaWidget)
         self.setLayout(layout)
+
+        self.restoreApplicationState()
 
     def createMenus(self):
         bar = self.menuBar()
@@ -803,11 +1085,18 @@ class MainWindow(QMainWindow):
         fileMenu = bar.addMenu("&File")
         newAction = QAction("&New", self)
         newAction.triggered.connect(self.newFile)
+        saveAction = QAction("&Save", self)
+        saveAction.triggered.connect(self.saveFile)
+        saveAction.setShortcut("Ctrl+S")
+
+        exitAction = QAction("&Exit", self)
+        exitAction.triggered.connect(self.quit)
+        exitAction.setShortcut("Ctrl+E")
 
         fileMenu.addAction(newAction)
-        fileMenu.addAction("&Save")
+        fileMenu.addAction(saveAction)
         fileMenu.addAction("&Open")
-        fileMenu.addAction("&Quit")
+        fileMenu.addAction(exitAction)
 
         viewMenu = bar.addMenu("&View")
         showGridAction = QAction("Show &grid", self)
@@ -822,10 +1111,58 @@ class MainWindow(QMainWindow):
         pass
 
     def saveFile(self):
-        pass
+        tab = self.workAreaWidget.activeTab()
+
+        if tab:
+            tab.saveFile()
+        else:
+            print("Not found", flush=True)
+
+    def closeEvent(self, event):        
+        if self.confirmQuit():
+            self.saveApplicationState()
+            event.accept()
+        else:
+            event.ignore()
+
+    def confirmQuit(self):
+        msgBox = QMessageBox(self)
+
+        msgBox.setWindowTitle("SpriteShits");
+        msgBox.setText("Are you sure you want to exit?");
+        msgBox.setStandardButtons(QMessageBox.Yes)
+        msgBox.addButton(QMessageBox.No)
+        msgBox.setDefaultButton(QMessageBox.No)
+        
+        return msgBox.exec() == QMessageBox.Yes
 
     def quit(self):
-        exit()
+        if self.confirmQuit():
+            self.saveApplicationState()
+            exit()
+
+    def saveApplicationState(self):
+        settings = QSettings("Bamboo", "SpriteShits")
+        settings.setValue("mainWindow/geometry", self.saveGeometry())
+        settings.setValue("mainWindow/windowState", self.saveState())
+
+        tabState = json.dumps(self.workAreaWidget.saveState()).encode('utf-8')
+        settings.setValue("mainWindow/tabs", QByteArray(tabState))
+    
+    def restoreApplicationState(self):
+        settings = QSettings("Bamboo", "SpriteShits")
+        try:
+            self.restoreGeometry(settings.value("mainWindow/geometry"))
+            self.restoreState(settings.value("mainWindow/windowState"))
+            
+        except:
+            pass
+
+        tabState = json.loads(str(settings.value("mainWindow/tabs"), 'utf-8'))
+
+        if tabState and len(tabState):
+            self.workAreaWidget.restoreState(tabState)
+
 
     def toggleGrid(self):
         self.showGrid = not self.showGrid
