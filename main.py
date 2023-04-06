@@ -1,12 +1,12 @@
 from PySide6.QtCore import QSize, Qt, QRectF, QPoint, QPointF, QDir, QSettings, QByteArray
 from PySide6.QtGui import QTransform, QPen, QBrush, QColor, QAction, QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QHBoxLayout, QVBoxLayout, QDockWidget, QListWidget, QTextEdit, QGraphicsScene, QGraphicsView, QFrame, QGraphicsSceneMouseEvent, QTabWidget, QToolBar, QGraphicsPixmapItem, QMenu, QTableWidget, QHeaderView, QTableWidgetItem, QComboBox, QCheckBox, QTreeView, QFileSystemModel, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QWidget, QMainWindow, QPushButton, QHBoxLayout, QVBoxLayout, QDockWidget, QListWidget, QTextEdit, QGraphicsScene, QGraphicsView, QFrame, QGraphicsSceneMouseEvent, QTabWidget, QToolBar, QGraphicsPixmapItem, QMenu, QTableWidget, QHeaderView, QTableWidgetItem, QComboBox, QCheckBox, QTreeView, QFileSystemModel, QFileDialog, QMessageBox, QAbstractItemView, QInputDialog
 
 # Only needed for access to command line arguments
 import sys
 from enum import Enum, IntEnum
 from math import ceil
-from os.path import basename
+from os.path import basename, join
 import json
 
 # You need one (and only one) QApplication instance per application.
@@ -121,6 +121,88 @@ class SpriteObject:
                             renderTiles = obj['renderTiles'],
                             hasCollision = obj['hasCollision'])
 
+class SpriteSheet:
+    def __init__(self, name, spriteFile, tileWidth, tileHeight, width, height, objects):
+        self.name = name
+        self.spriteFile = spriteFile
+        self.tileWidth = tileWidth
+        self.tileHeight = tileHeight
+        self.width = width
+        self.height = height
+        self.objects = objects
+
+        self.size = 102
+
+        self.gridLines = []
+
+        self.gridPen = QPen(Qt.black, 1, Qt.DashLine)
+
+        self._loadSpriteFile()
+
+    def _loadSpriteFile(self):
+        masterPixmap = QPixmap(self.spriteFile)
+        self.masterPixmap = masterPixmap
+
+        self.horizontalTiles = ceil(self.width / self.tileWidth)
+        self.verticalTiles = ceil(self.width / self.tileWidth)
+        self.tiles = [[None for col in range(self.verticalTiles)] for row in range(self.horizontalTiles)]
+
+        for x, row in enumerate(range(self.horizontalTiles)):
+            for y, col in enumerate(range(self.verticalTiles)):
+                copy_x = x * self.tileWidth
+                copy_y = y * self.tileHeight
+                # copy + scale
+                pixmap = masterPixmap.copy(copy_x, copy_y, self.tileWidth, self.tileHeight).scaled(self.size - 2, self.size - 2)
+                pixmapItem = QGraphicsPixmapItem(pixmap)
+
+                # placement
+                x_pos = 1 + (x * (self.size))
+                y_pos = 1 + (y * (self.size))
+
+                pixmapItem.setOffset(x_pos, y_pos)
+                self.tiles[x][y] = [pixmap, pixmapItem]
+                #self.addItem(pixmapItem)
+
+    def drawTiles(self, scene):
+        for x, row in enumerate(range(self.horizontalTiles)):
+            for y, col in enumerate(range(self.verticalTiles)):
+                scene.addItem(self.tiles[x][y][1])
+
+    def drawGrid(self, scene):
+        self.rows = self.horizontalTiles
+        self.cols = self.verticalTiles
+        
+        endPoint = self.rows * self.size
+
+        if len(self.gridLines):
+            for line in self.gridLines:
+                self.removeItem(line)
+
+            self.gridLines = []
+
+        #if not self.gridItems:
+        #    self.gridItems = [[None for col in range(self.cols)] for row in range(self.rows)]
+        #    self.selectedGridItems = [[None for col in range(self.cols)] for row in range(self.rows)]
+
+        #if self.application.showGrid:
+        # vertical lines
+        for i in range(0, self.cols + 1):
+            x = i * self.size
+            self.gridLines.append(scene.addLine(x, 0, x, endPoint, self.gridPen))
+
+        # horizontal lines
+        for i in range(0, self.rows + 1):
+            y = i * self.size
+            self.gridLines.append(scene.addLine(0, y, endPoint, y, self.gridPen))
+
+    @staticmethod
+    def fromdict(obj):
+        items = []
+
+        for key in obj['items']:
+            items.append(SpriteObject.fromdict(obj['items'][key]))
+
+        return SpriteSheet(obj['name'], obj['spriteFile'], obj['tileWidth'], obj['tileHeight'], obj['width'], obj['height'], items)
 
 class GraphicsView(QGraphicsView):
     def __init__(self, application, scene):
@@ -182,6 +264,7 @@ class MapScene(QGraphicsScene):
         self.rectPen = QPen(Qt.black, 0)
 
         self.gridLines = []
+        self.spriteSheets = []
 
         #rect = self.addRect(QRectF(0, 0, 100, 100), gridOutline, QBrush(Qt.green))
         #item = self.itemAt(50, 50, QTransform())
@@ -194,6 +277,7 @@ class MapScene(QGraphicsScene):
 
         self.gridTurtle = self.addRect(QRectF(0, 0, self.size, self.size), QPen(Qt.blue, 0), QBrush(QColor(0,0,255, 75)))
         self.gridTurtle.setZValue(100) #always on top
+
 
     def removeGridLines(self):
         if len(self.gridLines):
@@ -756,17 +840,113 @@ class WorkAreaTabMap(WorkAreaTab):
         self.layersDock.setFloating(False)
         self.addDockWidget(Qt.RightDockWidgetArea, self.layersDock)
 
-        self.tilesetsDock = QDockWidget("Tilesets", self)
-        self.tilesetsWidget = QListWidget()
-        self.tilesetsWidget.addItem("ground")
+        self.spriteSheetsDock = QDockWidget("Sprite Sheets", self)
+        self.spriteSheetTabWidget = SpriteSheetTabWidget(application)
         
-        self.tilesetsDock.setWidget(self.tilesetsWidget)
-        self.tilesetsDock.setFloating(False)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.tilesetsDock)
+        self.spriteSheetsDock.setWidget(self.spriteSheetTabWidget)
+        self.spriteSheetsDock.setFloating(False)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.spriteSheetsDock)
+
+        halfHeight = self.height() // 2
+
+        self.resizeDocks([self.layersDock, self.spriteSheetsDock], [halfHeight, halfHeight], Qt.Orientation.Vertical);
+        self.resizeDocks([self.layersDock, self.spriteSheetsDock], [400, 400], Qt.Orientation.Horizontal);
 
         # Using a title
         fileToolBar = self.addToolBar("Map")
         fileToolBar.addAction("Test")
+
+        self.spriteSheets = []
+
+    def addSpriteSheet(self, filePath, data):
+        spriteSheet = SpriteSheet.fromdict(data)
+
+        self.spriteSheets.append(spriteSheet)
+        self.spriteSheetTabWidget.addTab(spriteSheet)
+        #self.scene.addSpriteSheet(filePath, data)
+
+class SpriteSheetTabContentWidget(QWidget):
+    def __init__(self, application, spriteSheet):
+        super().__init__()
+
+        self.spriteSheet = spriteSheet
+        self.application = application
+
+        # Graphics area
+        #centralFrame = QFrame()
+        self.setLayout(QVBoxLayout())
+        self.scene = QGraphicsScene(self)
+        view = GraphicsView(application, self.scene)
+        self.view = view
+        view.setScene(self.scene)
+
+        self.layout().addWidget(view)
+
+        #self.setLayout(centralFrame)
+
+        view.verticalScrollBar().setSliderPosition(1)
+        view.horizontalScrollBar().setSliderPosition(1)
+
+        view.scale(0.25, 0.25)
+        view.translate(0.0, 0.0)
+
+        self.spriteSheet.drawTiles(self.scene)
+        self.spriteSheet.drawGrid(self.scene)
+
+class SpriteSheetTabWidget(QTabWidget):
+    def __init__(self, application = None):
+        super().__init__(application)
+
+        self.application = application
+
+        self.setTabsClosable(True)
+        self.tabCloseRequested.connect(self.closeHandler)
+        
+    def closeHandler(self, index):
+        msgBox = QMessageBox(self.application)
+
+        msgBox.setWindowTitle("SpriteSheetz");
+        msgBox.setText("Are you sure you want to remove this sprite sheet from the map?");
+        msgBox.setStandardButtons(QMessageBox.Yes)
+        msgBox.addButton(QMessageBox.No)
+        msgBox.setDefaultButton(QMessageBox.No)
+        
+        if msgBox.exec() == QMessageBox.Yes:
+            #self.removeTab(index)
+            pass
+
+    def addTab(self, spriteSheet):
+        return super().addTab(SpriteSheetTabContentWidget(self.application, spriteSheet), spriteSheet.name)
+
+    def activeTab(self):
+        currentIndex = self.currentIndex()
+
+        if currentIndex > -1:
+            return self.widget(self.currentIndex())
+
+    def saveState(self):
+        tabStates = []
+
+        for i in range(0, self.count()):
+            tab = self.widget(i)
+            tabStates.append(tab.saveState())
+
+        return tabStates
+
+    def loadFile(self, filePath, data):
+        if data['type'] == 'sheet':
+            # if tab exists, swap to it instead
+            self.addTab(data['name'], WorkAreaType.SPRITE_SHEET).restoreState(data)
+
+    def restoreState(self, tabStates):
+        print(tabStates)
+        for state in tabStates:
+            print(state)
+            if 'type' in state:
+                print("me", flush=True)
+                if state['type'] == 'sheet':
+                    self.addTab(state['name'], WorkAreaType.SPRITE_SHEET).restoreState(state)
+        
 
 class ObjectPropertiesWidget(QDockWidget):
     def __init__(self, name, parent):
@@ -913,19 +1093,21 @@ class WorkAreaTabSpriteSheet(WorkAreaTab):
     def __init__(self, application, title, areaType):
         super().__init__(application, title, areaType)
 
+        self.areaType = areaType
+
         self.propertiesDock = SpriteSheetPropertiesWidget("Sprite Sheet Properties", self, application)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.propertiesDock)
 
         self.objectPropertiesDock = ObjectPropertiesWidget("Object Properties", self)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.objectPropertiesDock)
 
-        self.objectsDock = QDockWidget("Objects", self)
-        self.objectsWidget = QListWidget()
-        self.objectsWidget.addItem("ground")
+        #self.objectsDock = QDockWidget("Objects", self)
+        #self.objectsWidget = QListWidget()
+        #self.objectsWidget.addItem("ground")
         
-        self.objectsDock.setWidget(self.objectsWidget)
-        self.objectsDock.setFloating(False)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.objectsDock)
+        #self.objectsDock.setWidget(self.objectsWidget)
+        #self.objectsDock.setFloating(False)
+        #self.addDockWidget(Qt.RightDockWidgetArea, self.objectsDock)
 
         #self.scene.loadSpriteSheetFromImageFile("tilemap2.png")
         #self.scene.createGrid()
@@ -933,6 +1115,9 @@ class WorkAreaTabSpriteSheet(WorkAreaTab):
     def restoreState(self, state):
         print(state)
         self.scene.restoreState(state)
+
+    def loadSpriteSheetFromImageFile(self, filePath):
+        self.scene.loadSpriteSheetFromImageFile(filePath)
 
 
 class WorkAreaTabWidget(QTabWidget):
@@ -986,6 +1171,11 @@ class WorkAreaTabWidget(QTabWidget):
 
         return tabStates
 
+    def loadFile(self, filePath, data):
+        if data['type'] == 'sheet':
+            # if tab exists, swap to it instead
+            self.addTab(data['name'], WorkAreaType.SPRITE_SHEET).restoreState(data)
+
     def restoreState(self, tabStates):
         print(tabStates)
         for state in tabStates:
@@ -995,19 +1185,39 @@ class WorkAreaTabWidget(QTabWidget):
                 if state['type'] == 'sheet':
                     self.addTab(state['name'], WorkAreaType.SPRITE_SHEET).restoreState(state)
         
+class ResourcesTreeView(QTreeView):
+    def __init__(self, application):
+        super().__init__()
+
+        self.application = application
+
+    def edit(self, index, trigger, event):
+        if trigger == QAbstractItemView.DoubleClicked:
+            # Prevent renaming files, double click to open the file instead in a tab
+            self.application.triggerFile(join(QDir.currentPath(), index.data()))
+
+            return False
+        if trigger == QAbstractItemView.EditKeyPressed:
+            return False
+        return super().edit(index, trigger, event)
+
 class ResourcesDockWidget(QDockWidget):
-    def __init__(self, name, parent = None):
+    def __init__(self, application, name, parent = None):
         super().__init__(name, parent)
+
+        self.application = application
 
         model = QFileSystemModel()
         model.setNameFilters(['*.json'])
         model.setNameFilterDisables(False)
+        model.setReadOnly(False)
         #model.setFilter(QDir.NoDotAndDotDot | QDir.AllDirs)
         model.setRootPath(QDir.currentPath())
-        tree = QTreeView()
+        tree = ResourcesTreeView(application)
         tree.setRootIsDecorated(False)
         tree.setModel(model)
         tree.setRootIndex(model.index(QDir.currentPath()))
+        #tree.setSelectionModel()
 
         #tree.hideColumn(0)
 
@@ -1050,27 +1260,10 @@ class MainWindow(QMainWindow):
         # Docks should be split by default not tabbed
         self.setDockOptions(self.dockOptions() & ~QMainWindow.AllowTabbedDocks)
 
-        self.resourcesDock = ResourcesDockWidget("Project Files", self)
+        self.resourcesDock = ResourcesDockWidget(self, "Project Files", self)
         self.resourcesDock.setObjectName("project_files")
 
         self.addDockWidget(Qt.LeftDockWidgetArea, self.resourcesDock)
-
-
-
-        
-
-        # Graphics area
-        #centralFrame = QFrame()
-        #centralFrame.setLayout(QVBoxLayout())
-
-        #scene = SpriteScene(self);
-        #self.scene = scene
-        #view = SpriteView(self, scene);
-        #view.setScene(scene)
-
-        #view.fitInView(scene.itemsBoundingRect())
-
-        #centralFrame.layout().addWidget(view);
 
         self.workAreaWidget = WorkAreaTabWidget(self)
 
@@ -1104,11 +1297,42 @@ class MainWindow(QMainWindow):
         viewMenu.addAction(showGridAction)
 
     def newFile(self):
-        print("New file", flush=True)
-        pass
+        item, ok = QInputDialog.getItem(self, "New File",
+                                        "Type:", ["Map", "Sprite Sheet"], 0, False);
+        if ok and item:
+            if item == 'Map':
+                self.workAreaWidget.addTab("Untitled Map", WorkAreaType.MAP)
+            else:
+                fileName, _ = QFileDialog.getOpenFileName(self, 'Open Sprite Sheet Image', filter='Images (*.png *.gif)')
 
-    def openFile(self):
-        pass
+                if fileName:
+                    tab = self.workAreaWidget.addTab("Untitled Sprite Sheet", WorkAreaType.SPRITE_SHEET)
+                    tab.loadSpriteSheetFromImageFile(fileName)
+
+    def readFile(self, filePath):
+        with open(filePath, 'r') as file:
+            data = json.loads(file.read())
+        return data
+
+    def triggerFile(self, filePath):
+        # if open then add to selected map instead
+        data = self.readFile(filePath)
+
+        tab = self.workAreaWidget.activeTab()
+
+        if tab and tab.areaType == WorkAreaType.MAP:
+            if self.confirmDialogue('SpriteSheetz', 'Would you like to add this sheet to the map?'):
+                tab.addSpriteSheet(filePath, data)
+        else:
+            self.openFile(filePath, data)
+
+
+    def openFile(self, filePath, data = None):
+        if data is None:
+            data = self.readFile(filePath)
+
+        if data and 'type' in data:
+            self.workAreaWidget.loadFile(filePath, data)
 
     def saveFile(self):
         tab = self.workAreaWidget.activeTab()
@@ -1125,16 +1349,19 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
-    def confirmQuit(self):
+    def confirmDialogue(self, title, question):
         msgBox = QMessageBox(self)
 
-        msgBox.setWindowTitle("SpriteSheetz");
-        msgBox.setText("Are you sure you want to exit?");
+        msgBox.setWindowTitle(title)
+        msgBox.setText(question)
         msgBox.setStandardButtons(QMessageBox.Yes)
         msgBox.addButton(QMessageBox.No)
         msgBox.setDefaultButton(QMessageBox.No)
         
         return msgBox.exec() == QMessageBox.Yes
+
+    def confirmQuit(self):
+        return self.confirmDialogue('SpriteSheetz', 'Are you sure you want to exit?')
 
     def quit(self):
         if self.confirmQuit():
@@ -1154,15 +1381,12 @@ class MainWindow(QMainWindow):
         try:
             self.restoreGeometry(settings.value("mainWindow/geometry"))
             self.restoreState(settings.value("mainWindow/windowState"))
-            
+            tabState = json.loads(str(settings.value("mainWindow/tabs"), 'utf-8'))
+
+            if tabState and len(tabState):
+                self.workAreaWidget.restoreState(tabState)
         except:
             pass
-
-        tabState = json.loads(str(settings.value("mainWindow/tabs"), 'utf-8'))
-
-        if tabState and len(tabState):
-            self.workAreaWidget.restoreState(tabState)
-
 
     def toggleGrid(self):
         self.showGrid = not self.showGrid
